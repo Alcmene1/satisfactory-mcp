@@ -1,8 +1,8 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "0.1.0",
-	"SemVersion": "0.1.0",
+	"VersionName": "1.0.0",
+	"SemVersion": "1.0.0",
 	"GameVersion": ">=491125",
 	"FriendlyName": "Satisfactory MCP Server",
 	"Description": "Embeds an MCP (Model Context Protocol) HTTP server into the game so AI agents can observe and control the factory in real time.",
