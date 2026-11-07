@@ -153,10 +153,12 @@ namespace
 			int32 Total = 0;
 			for (TActorIterator<AFGBuildable> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				++Total;
 				if (Items.Num() < MaxCount)
 				{
 					AFGBuildable* B = *It;
+					if (!B || !IsValid(B) || B->IsValidLowLevelFast(true) == false) continue;
 					const FVector Loc = B->GetActorLocation();
 					TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
 					Item->SetStringField(TEXT("class"), B->GetClass()->GetName());
@@ -239,6 +241,7 @@ namespace
 			int32 Total = 0;
 			for (TActorIterator<AFGBuildable> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				++Total;
 				Counts.FindOrAdd((*It)->GetClass()->GetName())++;
 			}
@@ -292,6 +295,7 @@ namespace
 			int32 Matches = 0;
 			for (TActorIterator<AFGBuildable> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				const FString Cls = (*It)->GetClass()->GetName();
 				if (!NameFilter.IsEmpty() && !Cls.Contains(NameFilter, ESearchCase::IgnoreCase))
 				{
@@ -375,6 +379,7 @@ namespace
 			int32 Total = 0;
 			for (TActorIterator<AFGBuildableStorage> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				const FVector Loc = (*It)->GetActorLocation();
 				if (bNear && FVector::Dist(Loc, Center) > Radius * 100.0)
 				{
@@ -438,6 +443,7 @@ namespace
 			float Best = 1e30f;
 			for (TActorIterator<AFGBuildableFactory> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				const float D = FVector::Dist((*It)->GetActorLocation(), C);
 				if (D < Best) { Best = D; Mach = *It; }
 			}
@@ -544,6 +550,7 @@ namespace
 			const FString RF = LowerUnicode(ResFilter);
 			for (TActorIterator<AFGResourceNode> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				const FVector LocPre = (*It)->GetActorLocation();
 				if (bNear && Radius > 0.0) { const double ddx = LocPre.X / 100.0 - NX, ddy = LocPre.Y / 100.0 - NY; if (ddx*ddx + ddy*ddy > Radius*Radius) continue; }
 				++Total;
@@ -611,6 +618,7 @@ namespace
 			for (TObjectIterator<UClass> It; It; ++It)
 			{
 				UClass* RClass = *It;
+				if (!RClass || !IsValid(RClass) || RClass->IsValidLowLevelFast(true) == false) continue;
 				if (!RClass || RClass == RecipeBase || !RClass->IsChildOf(RecipeBase))
 				{
 					continue;
@@ -693,6 +701,7 @@ namespace
 		for (TObjectIterator<UClass> It; It; ++It)
 		{
 			UClass* C = *It;
+			if (!C || !IsValid(C) || C->IsValidLowLevelFast(true) == false) continue;
 			if (!C || C == Base || !C->IsChildOf(Base))
 			{
 				continue;
@@ -729,6 +738,7 @@ namespace
 		for (TObjectIterator<UClass> It; It; ++It)
 		{
 			UClass* C = *It;
+			if (!C || !IsValid(C) || C->IsValidLowLevelFast(true) == false) continue;
 			if (!C || !C->IsChildOf(UFGItemDescriptor::StaticClass()))
 			{
 				continue;
@@ -808,6 +818,7 @@ namespace
 				// fuel generators within 15 m win over storages at any distance
 				for (TActorIterator<AFGBuildableGeneratorFuel> It(World); It; ++It)
 				{
+					if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 					const float D = FVector::Dist((*It)->GetActorLocation(), Center);
 					if (D < 1500.f)
 					{
@@ -834,6 +845,7 @@ namespace
 					float BestDist = TNumericLimits<float>::Max();
 					for (TActorIterator<AFGBuildableStorage> It(World); It; ++It)
 					{
+						if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 						const float D = FVector::Dist((*It)->GetActorLocation(), Center);
 						UFGInventoryComponent* SI = (*It)->GetStorageInventory();
 						if (!SI) SI = PropInv(*It, TEXT("mInventory"));
@@ -848,6 +860,7 @@ namespace
 						// generators: fill the fuel inventory when pointing at one
 						for (TActorIterator<AFGBuildableGeneratorFuel> It(World); It; ++It)
 						{
+							if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 							const float D = FVector::Dist((*It)->GetActorLocation(), Center);
 							if (D < 3000.f && (*It)->GetFuelInventory())
 							{
@@ -956,6 +969,7 @@ namespace
 		for (TObjectIterator<UClass> It; It; ++It)
 		{
 			UClass* RClass = *It;
+			if (!RClass || !IsValid(RClass) || RClass->IsValidLowLevelFast(true) == false) continue;
 			if (!RClass || RClass == RecipeBase || !RClass->IsChildOf(RecipeBase)) continue;
 			if (RClass->HasAnyClassFlags(EClassFlags::CLASS_Abstract | EClassFlags::CLASS_Deprecated)) continue;
 			const UFGRecipe* CDO = RClass->GetDefaultObject<UFGRecipe>();
@@ -1138,7 +1152,9 @@ namespace
 		{
 			for (TActorIterator<AFGBuildable> It(BuildWorld); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				const AFGBuildable* B = *It;
+ if (!B || !IsValid(B) || B->IsValidLowLevelFast(true) == false) continue;
 				if (IsValid(B) && FVector::DistSquared2D(B->GetActorLocation(), HoloPos) < 900.f)
 					return true;
 			}
@@ -1174,7 +1190,10 @@ namespace
 			FString Dbg = TEXT("null");
 			int32 TotalBuildables = 0;
 			for (TActorIterator<AFGBuildable> It(BuildWorld); It; ++It)
-				if (IsValid(*It)) ++TotalBuildables;
+			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
+				++TotalBuildables;
+			}
 			if (Built && IsValid(Built))
 			{
 				const FVector BL = Built->GetActorLocation();
@@ -1279,6 +1298,7 @@ namespace
 				for (TObjectIterator<AFGResourceNodeBase> It; It; ++It)
 				{
 					AFGResourceNodeBase* N = *It;
+					if (!N || !IsValid(N) || N->IsValidLowLevelFast(true) == false) continue;
 					if (!N || !IsValid(N)) continue;
 					const double D = FVector::DistSquared(N->GetActorLocation(), Target);
 					if (D < BestD) { BestD = D; BestNode = N; }
@@ -1432,8 +1452,9 @@ namespace
 		float BestDist = 1e30f;
 		for (TActorIterator<AFGBuildable> It(World); It; ++It)
 		{
+			if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 			AFGBuildable* B = *It;
-			if (!B) continue;
+			if (!B || !IsValid(B) || B->IsValidLowLevelFast(true) == false) continue;
 			TArray<UFGFactoryConnectionComponent*> Comps;
 			B->GetComponents<UFGFactoryConnectionComponent>(Comps);
 			for (UFGFactoryConnectionComponent* C : Comps)
@@ -1471,6 +1492,8 @@ namespace
 		Args->TryGetStringField(TEXT("name"), NameFilter);
 		bool bApply = true;
 		Args->TryGetBoolField(TEXT("apply"), bApply);
+		bool bForce = false;
+		Args->TryGetBoolField(TEXT("force"), bForce);
 
 		UWorld* World = GetGameWorld();
 		if (!World)
@@ -1478,7 +1501,7 @@ namespace
 			return {true, TEXT("{\"error\":\"no active game world\"}")};
 		}
 		FString Result;
-		RunOnGameThread([&World, X, Y, Z, Radius, &NameFilter, bApply, &Result]()
+		RunOnGameThread([&World, X, Y, Z, Radius, &NameFilter, bApply, bForce, &Result]()
 		{
 			const FVector Center(X * 100.0, Y * 100.0, Z * 100.0);
 			const FString F = LowerUnicode(NameFilter);
@@ -1486,8 +1509,9 @@ namespace
 			float BestDist = TNumericLimits<float>::Max();
 			for (TActorIterator<AFGBuildable> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				AFGBuildable* B = *It;
-				if (!B) continue;
+				if (!B || !IsValid(B) || B->IsValidLowLevelFast(true) == false) continue;
 				if (!F.IsEmpty() && !LowerUnicode(B->GetClass()->GetName()).Contains(F)) continue;
 				const float D = FVector::DistSquared(B->GetActorLocation(), Center);
 				if (D > static_cast<float>(Radius * Radius) * 10000.0f) continue;
@@ -1516,8 +1540,16 @@ namespace
 				Result = FString::Printf(TEXT("{\"error\":\"dismantle function not found\",\"class\":\"%s\"}"), *Cls);
 				return;
 			}
+			// Post-kill verification; optional force=true hard-destroys if the game's
+			// Dismantle event leaves the actor alive (skips refunds).
 			Target->ProcessEvent(DismantleFn, nullptr);
-			Result = FString::Printf(TEXT("{\"dismantled\":\"%s\"}"), *Cls);
+			bool bDead = !IsValid(Target) || Target->IsValidLowLevelFast(true) == false;
+			if (!bDead && bForce)
+			{
+				Target->K2_DestroyActor();
+				bDead = !IsValid(Target) || Target->IsValidLowLevelFast(true) == false;
+			}
+			Result = FString::Printf(TEXT("{\"dismantled\":\"%s\",\"gone\":%s}"), *Cls, bDead ? TEXT("true") : TEXT("false"));
 		});
 		return Result.IsEmpty() ? FMcpToolResult{true, TEXT("{\"error\":\"game thread timeout\"}")} : FMcpToolResult{false, Result};
 	}
@@ -1671,18 +1703,49 @@ namespace
 				if (H->DoMultiStepPlacement(true))
 				{
 					bDone = true;
+					break;
 				}
-				else
+				H->UpdateHologramPlacement(HitTo);
+				// Same trick as FinishHoloBuild: the game keeps FGCDInitializing on
+				// the list until the hologram ticks a few times; pump its Tick() so
+				// multi-step placement can actually finish within one synchronous call.
+				if (!H->HasActorBegunPlay())
 				{
+					H->DispatchBeginPlay();
+				}
+				for (int32 t = 0; t < 20 && !bDone; ++t)
+				{
+					H->Tick(0.05f);
+					if (H->DoMultiStepPlacement(true))
+					{
+						bDone = true;
+						break;
+					}
 					H->UpdateHologramPlacement(HitTo);
 				}
 			}
 			if (!bDone)
 			{
-				const FString Dq = HoloDisqualifierText(H);
-				H->Destroy();
-				Result = FString::Printf(TEXT("{\"error\":\"belt placement did not complete\",\"reasons\":\"%s\"}"), *Dq);
-				return;
+				// Dry-run parity: if the only remaining disqualifiers are init/soft,
+				// let FinishHoloBuild's dry path report validity instead of failing.
+				bool bSoftOnly = true;
+				TArray<TSubclassOf<UFGConstructDisqualifier>> DqBelt;
+				H->GetConstructDisqualifiers(DqBelt);
+				for (TSubclassOf<UFGConstructDisqualifier> D : DqBelt)
+				{
+					if (!D || !(LowerUnicode(D->GetName()).Contains(TEXT("initializing")) || UFGConstructDisqualifier::GetIsSoftDisqualifier(D)))
+					{
+						bSoftOnly = false;
+						break;
+					}
+				}
+				if (!(bDry && bSoftOnly))
+				{
+					const FString Dq = HoloDisqualifierText(H);
+					H->Destroy();
+					Result = FString::Printf(TEXT("{\"error\":\"belt placement did not complete\",\"reasons\":\"%s\"}"), *Dq);
+					return;
+				}
 			}
 
 			Result = FinishHoloBuild(H, World, TEXT("build_belt"), bDry);
@@ -1700,7 +1763,9 @@ namespace
 		float BestDist = 1e30f;
 		for (TActorIterator<AFGBuildable> It(World); It; ++It)
 		{
+			if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 			AFGBuildable* B = *It;
+			if (!B || !IsValid(B) || B->IsValidLowLevelFast(true) == false) continue;
 			if (!IsValid(B)) continue;
 			TArray<UFGPowerConnectionComponent*> Comps;
 			B->GetComponents<UFGPowerConnectionComponent>(Comps);
@@ -1846,7 +1911,9 @@ namespace
 			};
 			for (TActorIterator<AFGBuildableGenerator> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				AFGBuildableGenerator* G = *It;
+				if (!G || !IsValid(G) || G->IsValidLowLevelFast(true) == false) continue;
 				const FVector L = G->GetActorLocation();
 				const double DX = L.X - NX * 100.0, DY = L.Y - NY * 100.0;
 				if (DX * DX + DY * DY > R2 * R2) continue;
@@ -1869,6 +1936,7 @@ namespace
 			for (TObjectIterator<UFGPowerInfoComponent> It; It; ++It)
 			{
 				UFGPowerInfoComponent* C = *It;
+				if (!C || !IsValid(C) || C->IsValidLowLevelFast(true) == false) continue;
 				if (!C || !IsValid(C)) continue;
 				AActor* Ow = C->GetOwner();
 				if (!Ow || !IsValid(Ow)) continue;
@@ -1919,8 +1987,9 @@ namespace
 			int32 Total = 0;
 			for (TActorIterator<AFGBuildableFactory> It(World); It; ++It)
 			{
+				if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 				AFGBuildableFactory* M = *It;
-				if (!M) continue;
+				if (!M || !IsValid(M) || M->IsValidLowLevelFast(true) == false) continue;
 				const FVector Loc = M->GetActorLocation();
 				if (FVector::Dist(Loc, Center) > Radius * 100.0) continue;
 				const FString Cls = M->GetClass()->GetName();
@@ -2318,8 +2387,9 @@ FMcpToolResult ToolMoveBuildable(const TSharedPtr<FJsonObject>& Args)
 		float BestD = TNumericLimits<float>::Max();
 		for (TActorIterator<AFGBuildable> It(World); It; ++It)
 		{
+			if (!*It || !IsValid(*It) || (*It)->IsValidLowLevelFast(true) == false) continue;
 			AFGBuildable* B = *It;
-			if (!B) continue;
+			if (!B || !IsValid(B) || B->IsValidLowLevelFast(true) == false) continue;
 			if (!LowerUnicode(B->GetClass()->GetName()).Contains(F)) continue;
 			const float D = FVector::Dist(B->GetActorLocation(), Center);
 			if (D < BestD && D < Radius * 100.0) { BestD = D; Best = B; }
@@ -2402,7 +2472,7 @@ FString FMcpTools::GetToolsListJson()
 	{"name":"wire","description":"Run a power line like a player: wire hologram snaps between the power connector near x1,y1,z1 and the one near x2,y2,z2 (machine<->pole or pole<->pole), then verifies both ends share one power circuit. Args: x1,y1,z1,x2,y2,z2 (meters), r1,r2 search radius m.","inputSchema":{"type":"object","properties":{"x1":{"type":"number"},"y1":{"type":"number"},"z1":{"type":"number"},"x2":{"type":"number"},"y2":{"type":"number"},"z2":{"type":"number"},"r1":{"type":"number"},"r2":{"type":"number"}},"required":["x1","y1","z1","x2","y2","z2"]}},
 	{"name":"get_machine_status","description":"Factories near point: class, location, current recipe products, connections (in/out, connected, item on output). Args: near_x,near_y,near_z,radius_m (default 50), class substring filter, limit (default 15).","inputSchema":{"type":"object","properties":{"near_x":{"type":"number"},"near_y":{"type":"number"},"near_z":{"type":"number"},"radius_m":{"type":"number"},"class":{"type":"string"},"limit":{"type":"integer"}},"required":["near_x","near_y","near_z"]}},
 	{"name":"power_check","description":"Power diagnostics near point: generators (canStart, capacity MW) and consumers actual vs target consumption MW (0 actual = unpowered or idle). Args: near_x,near_y,radius_m.","inputSchema":{"type":"object","properties":{"near_x":{"type":"number"},"near_y":{"type":"number"},"radius_m":{"type":"number"}},"required":["near_x","near_y"]}},
-	{"name":"dismantle","description":"Dismantle nearest buildable to x,y,z within radius_m (optional name substring filter). Args: x,y,z,radius_m,name,apply (default true; false = preview target only).","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"radius_m":{"type":"number"},"name":{"type":"string"},"apply":{"type":"boolean"}},"required":["x","y","z"]}}
+	{"name":"dismantle","description":"Dismantle nearest buildable to x,y,z within radius_m (optional name substring filter). Args: x,y,z,radius_m,name,apply (default true; false = preview target only),force (hard-destroy if the game event leaves the actor alive).","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"radius_m":{"type":"number"},"name":{"type":"string"},"apply":{"type":"boolean"},"force":{"type":"boolean"}},"required":["x","y","z"]}}
 ])json";
 	return FString(ToolsJsonA) + FString(ToolsJsonA2) + FString(ToolsJsonB);
 }
