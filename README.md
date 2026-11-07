@@ -67,4 +67,4 @@ Source/SatisfactoryMCP/
 
 ## License
 
-Not chosen yet — want to use this: reach out to the author.
+MIT — see [LICENSE](LICENSE).
