@@ -1,26 +1,26 @@
 # Satisfactory MCP
 
-MCP-сервер внутри Satisfactory (мод на SML): управляй строительством и производством из любого MCP-клиента (Claude, Hermes, свой скрипт) через HTTP JSON-RPC. Постройки идут **через нативный конвейер голограмм** — игра сама валидирует размещение (clearance, фундамент, стоимость) и строит так же, как игрок.
+An in-game MCP server for Satisfactory (SML mod): control building and production from any MCP client (Claude, Hermes, your own script) over HTTP JSON-RPC. All construction goes **through the native hologram pipeline** — the game itself validates placement (clearance, foundations, cost) and builds exactly like a player would.
 
-> Только для одиночной Creative/песочницы. Это инструмент автоматизации, а не обход мультиплеера: сервер слушает исключительно `127.0.0.1`.
+> Single-player Creative/sandbox only. This is an automation tool, not a multiplayer cheat: the server binds to `127.0.0.1` exclusively.
 
-## Возможности (26 инструментов)
+## Capabilities (26 tools)
 
-| Группа | Инструменты |
+| Group | Tools |
 |---|---|
-| Разведка | `get_game_info`, `get_player_state`, `get_buildables_summary`, `find_buildables`, `get_machine_status` (+ координаты коннекторов и силовых розеток), `get_ground_z`, `power_check` (+ сокеты), `get_resource_nodes`, `list_recipes`, `list_storages` |
-| Постройка | `build` (`grid` — привязка к мировой сетке, `flat_z` — ровные площадки, `dry_run` — валидация без постройки), `build_many` (батч одним запросом), `build_belt` (режимы `straight`/`curve` как в игре, waypoints `via`, `dry_run`), `wire`, `spawn_buildable`, `move_buildable` |
-| Lightweight-постройки | `lightweight_list`, `lightweight_remove`, `lightweight_convert` — фундаменты и стены хранятся лёгкими инстансами, обычные актёрные API их не видят |
-| Игра | `dismantle`, `set_recipe`, `give_item`, `teleport_player`, `set_phase`, `power_check` |
+| Recon | `get_game_info`, `get_player_state`, `get_buildables_summary`, `find_buildables`, `get_machine_status` (+ connector and power-socket coordinates), `get_ground_z`, `power_check` (+ sockets), `get_resource_nodes`, `list_recipes`, `list_storages` |
+| Building | `build` (`grid` — world-grid snapping, `flat_z` — level floors, `dry_run` — validate without building), `build_many` (batch in one call), `build_belt` (native `straight`/`curve` build modes, `via` waypoints, `dry_run`), `wire`, `spawn_buildable`, `move_buildable` |
+| Lightweight buildables | `lightweight_list`, `lightweight_remove`, `lightweight_convert` — foundations and walls are stored as lightweight instances that plain actor APIs do not see |
+| Gameplay | `dismantle`, `set_recipe`, `give_item`, `teleport_player`, `set_phase` |
 
-## Безопасность
+## Security
 
-- Токен: `Authorization: Bearer <token>` на всех `POST /mcp`. Берётся из `Mods/SatisfactoryMCP/mcp.ini` (`token=...`, опционально `port=...`) или генерируется при первом запуске в `Mods/SatisfactoryMCP/mcp_token.txt`.
-- Браузерный drive-by закрыт: нет CORS-заголовков, чужие `Origin`/`Host` → 403 (анти-DNS-rebinding), не-JSON content-type → 415.
-- Лимиты: тело ≤ 512 КБ, шапка ≤ 16 КБ, ≤ 8 одновременных соединений.
-- `/health` — без токена.
+- Every `POST /mcp` requires `Authorization: Bearer ***`. The token is read from `Mods/SatisfactoryMCP/mcp.ini` (`token=...`, optional `port=...`) or generated once at first launch into `Mods/SatisfactoryMCP/mcp_token.txt` (stable across restarts).
+- Browser drive-by attacks are blocked: no CORS headers at all, foreign `Origin`/`Host` → 403 (DNS-rebinding guard per the MCP spec), non-JSON content type → 415.
+- Limits: body ≤ 512 KB, headers ≤ 16 KB, ≤ 8 concurrent connections.
+- `/health` stays token-free.
 
-## Подключение клиента
+## Client configuration
 
 ```json
 {
@@ -28,7 +28,7 @@ MCP-сервер внутри Satisfactory (мод на SML): управляй �
     "satisfactory": {
       "type": "http",
       "url": "http://127.0.0.1:8898/mcp",
-      "headers": { "Authorization": "Bearer <из mcp_token.txt>" }
+      "headers": { "Authorization": "Bearer <token from mcp_token.txt>" }
     }
   }
 }
@@ -38,33 +38,33 @@ curl:
 ```bash
 curl -s -X POST http://127.0.0.1:8898/mcp \
   -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer <token>' \
+  -H 'Authorization: Bearer ***' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-## Сборка
+## Building
 
-Требуются [Satisfactory Modding Starter Project](https://docs.ficsit.app/) (v3.12+) и Unreal Engine 5 с CSS-профилем.
+Requires the [Satisfactory Modding Starter Project](https://docs.ficsit.app/) (v3.12+) and Unreal Engine 5 with the CSS profile.
 
 ```bash
-# из корня StarterProject
+# from the StarterProject root
 RunUAT.bat -ScriptsForProject=FactoryGame.uproject PackagePlugin \
   -project=FactoryGame.uproject -clientconfig=Shipping -DLCName=SatisfactoryMCP \
   -build -platform=Win64 -nocompileeditor
 ```
 
-Скопировать `Mods/SatisfactoryMCP/Binaries/Win64/*.dll` в `<игра>/FactoryGame/Mods/SatisfactoryMCP/Binaries/Win64/`.
+Copy `Mods/SatisfactoryMCP/Binaries/Win64/*.dll` into `<game>/FactoryGame/Mods/SatisfactoryMCP/Binaries/Win64/`.
 
-## Структура
+## Layout
 
 ```
 Source/SatisfactoryMCP/
-  Private/McpHttpServer.cpp   — HTTP-сервер (сокет, bearer-auth, лимиты)
-  Private/McpRpc.cpp          — JSON-RPC 2.0 слой (initialize, tools/list, tools/call)
-  Private/McpTools.cpp        — все инструменты: голограмма-пайплайн, lightweight-подсистема, энергия
-  Private/SatisfactoryMCPModule.cpp — запуск сервера при старте игры
+  Private/McpHttpServer.cpp   — HTTP server (raw socket, bearer auth, limits)
+  Private/McpRpc.cpp          — JSON-RPC 2.0 layer (initialize, tools/list, tools/call)
+  Private/McpTools.cpp        — all tools: hologram pipeline, lightweight subsystem, power
+  Private/SatisfactoryMCPModule.cpp — starts the server at game startup
 ```
 
-## Лицензия
+## License
 
-Пока не выбрана — хотите использовать: напишите автору.
+Not chosen yet — want to use this: reach out to the author.

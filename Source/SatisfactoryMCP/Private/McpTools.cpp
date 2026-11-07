@@ -207,7 +207,7 @@ namespace
 	FString LowerUnicode(const FString& S)
 	{
 		// Shipping builds lowercase only ASCII (ToLower and ESearchCase::IgnoreCase alike);
-		// do Cyrillic А-Я/Ё by hand, then let ToLower handle the rest.
+		// do non-ASCII uppercase (Cyrillic A-Ya / Yo range) by hand, then let ToLower handle the rest.
 		FString Out = S;
 		for (TCHAR& C : Out)
 		{
@@ -946,7 +946,7 @@ namespace
 		return Hit;
 	}
 
-	// Resolve a user query ("smelter", "Конвейер Mk1", "Build_SmelterMk1"...) to a
+	// Resolve a user query ("smelter", "Conveyor Belt Mk1", "Build_SmelterMk1"...) to a
 	// recipe whose product is a build descriptor with a hologram class.
 	bool ResolveBuildRecipe(const FString& Query, TSubclassOf<UFGRecipe>& OutRecipe, FString& OutProduct, TArray<FString>& Near)
 	{
@@ -1217,7 +1217,7 @@ namespace
 		FString Query;
 		if (!Args->TryGetStringField(TEXT("query"), Query) || Query.IsEmpty())
 		{
-			return {true, TEXT("{\"error\":\"query (product display name or class, e.g. 'Smelter' / 'Фундамент') required\"}")};
+			return {true, TEXT("{\"error\":\"query (product display name or class, e.g. 'Smelter' / 'Foundation') required\"}")};
 		}
 		double X = 0, Y = 0, Z = 0, Yaw = 0;
 		if (!Args->TryGetNumberField(TEXT("x"), X) || !Args->TryGetNumberField(TEXT("y"), Y) || !Args->TryGetNumberField(TEXT("z"), Z))
@@ -2393,8 +2393,8 @@ FString FMcpTools::GetToolsListJson()
 )json";
 	static const TCHAR* ToolsJsonA2 = LR"json(
 	{"name":"set_phase","description":"Set the game phase (legit advanced game rule, unlocks research trees up to that phase). Args: index (0-based phase number).","inputSchema":{"type":"object","properties":{"index":{"type":"integer"}},"required":["index"]}},
-	{"name":"give_item","description":"Give items to the player inventory (or nearest storage at storage_x/y/z). Args: item (display name like 'Стальной слиток' or class), count (default 1, max 10000), optional storage_x/storage_y/storage_z.","inputSchema":{"type":"object","properties":{"item":{"type":"string"},"count":{"type":"integer"},"storage_x":{"type":"number"},"storage_y":{"type":"number"},"storage_z":{"type":"number"}},"required":["item"]}},
-	{"name":"build","description":"Build through the game's hologram pipeline exactly like a player: recipe match -> hologram placement/snapping/ground adjust -> game validates (clearance, floor, materials) -> Construct. Consumes cost from player inventory. Args: query (product display name or class substring, e.g. 'Smelter', 'Фундамент'), x,y,z (meters), yaw (deg), grid (number: snap x,y to world-grid cell centers, use 8 for foundations), flat_z (number meters: force the whole piece onto one absolute Z plane, level floors over uneven terrain), dry_run (bool: run full placement+validation, report valid/reasons WITHOUT constructing).","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"yaw":{"type":"number"},"grid":{"type":"number"},"flat_z":{"type":"number"},"dry_run":{"type":"boolean"}},"required":["query","x","y","z"]}},
+	{"name":"give_item","description":"Give items to the player inventory (or nearest storage at storage_x/y/z). Args: item (display name like 'Steel Ingot' or class), count (default 1, max 10000), optional storage_x/storage_y/storage_z.","inputSchema":{"type":"object","properties":{"item":{"type":"string"},"count":{"type":"integer"},"storage_x":{"type":"number"},"storage_y":{"type":"number"},"storage_z":{"type":"number"}},"required":["item"]}},
+	{"name":"build","description":"Build through the game's hologram pipeline exactly like a player: recipe match -> hologram placement/snapping/ground adjust -> game validates (clearance, floor, materials) -> Construct. Consumes cost from player inventory. Args: query (product display name or class substring, e.g. 'Smelter', 'Foundation'), x,y,z (meters), yaw (deg), grid (number: snap x,y to world-grid cell centers, use 8 for foundations), flat_z (number meters: force the whole piece onto one absolute Z plane, level floors over uneven terrain), dry_run (bool: run full placement+validation, report valid/reasons WITHOUT constructing).","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"yaw":{"type":"number"},"grid":{"type":"number"},"flat_z":{"type":"number"},"dry_run":{"type":"boolean"}},"required":["query","x","y","z"]}},
 	{"name":"build_belt","description":"Lay a conveyor like a player: belt hologram snaps to OUTPUT connector near from_* and INPUT connector near to_*, game routes the spline (bends, inclines, support poles) and connects both ends itself. Args: from_x,from_y,from_z,to_x,to_y,to_z (meters), radius_m (default 6), query (belt product name, default 'Conveyor Belt Mk1'), mode ('straight' = game orthogonal build mode, only 90-degree corners; 'curve' = free spline mode; both native in-game modes), via ([{x,y,z}] meters: intermediate anchors clicked before finishing, use with curve for multi-bend runs), max_steps (default 10), dry_run (bool)).","inputSchema":{"type":"object","properties":{"from_x":{"type":"number"},"from_y":{"type":"number"},"from_z":{"type":"number"},"to_x":{"type":"number"},"to_y":{"type":"number"},"to_z":{"type":"number"},"radius_m":{"type":"number"},"query":{"type":"string"},"mode":{"type":"string","enum":["straight","curve"]},"via":{"type":"array","items":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}}}},"max_steps":{"type":"integer"},"dry_run":{"type":"boolean"}},"required":["from_x","from_y","from_z","to_x","to_y","to_z"]}},
 	{"name":"build_many","description":"Batch build in one call: items[] where each item has the same fields as build (query,x,y,z,yaw,grid,flat_z,dry_run). Runs sequentially through the same hologram pipeline; returns per-item results plus built/failed counts.","inputSchema":{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"query":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"yaw":{"type":"number"},"grid":{"type":"number"},"flat_z":{"type":"number"},"dry_run":{"type":"boolean"}},"required":["query","x","y","z"]}}},"required":["items"]}},
 )json";
