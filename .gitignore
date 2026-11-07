@@ -1,0 +1,15 @@
+# Binaries & build artifacts
+Binaries/
+Intermediate/
+Saved/
+*.pdb
+*.dll
+.modules
+
+# Local secrets / runtime config (token is generated in-game)
+mcp.ini
+mcp_token.txt
+
+# Backups
+*.bak_preABCD
+*.old_raw_builds

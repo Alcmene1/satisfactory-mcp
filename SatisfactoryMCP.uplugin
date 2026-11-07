@@ -1,0 +1,30 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"SemVersion": "0.1.0",
+	"GameVersion": ">=491125",
+	"FriendlyName": "Satisfactory MCP Server",
+	"Description": "Embeds an MCP (Model Context Protocol) HTTP server into the game so AI agents can observe and control the factory in real time.",
+	"Category": "Modding",
+	"CreatedBy": "iam",
+	"DocsURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SatisfactoryMCP",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SML",
+			"SemVersion": "^3.12.0",
+			"Enabled": true
+		}
+	]
+}
