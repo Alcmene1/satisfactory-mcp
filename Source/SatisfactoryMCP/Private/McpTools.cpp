@@ -329,6 +329,91 @@ namespace
 		return Result.IsEmpty() ? FMcpToolResult{true, TEXT("{\"error\":\"game thread timeout\"}")} : FMcpToolResult{false, Result};
 	}
 
+	// Pawns (characters, creatures, vehicles, mod NPCs such as SatisfactoBot companions) are not
+	// buildables, so find_buildables cannot see them. Sorted by distance from the centre.
+	FMcpToolResult ToolFindPawns(const TSharedPtr<FJsonObject>& Args)
+	{
+		FString NameFilter;
+		Args->TryGetStringField(TEXT("name"), NameFilter);
+		double NX = 0, NY = 0, NZ = 0;
+		const bool bNear = Args->TryGetNumberField(TEXT("near_x"), NX)
+			&& Args->TryGetNumberField(TEXT("near_y"), NY)
+			&& Args->TryGetNumberField(TEXT("near_z"), NZ);
+		double Radius = 100.0;
+		Args->TryGetNumberField(TEXT("radius_m"), Radius);
+		int32 Limit = 50;
+		Args->TryGetNumberField(TEXT("limit"), Limit);
+		Limit = FMath::Clamp(Limit, 1, 500);
+
+		UWorld* World = GetGameWorld();
+		if (!World)
+		{
+			return {true, TEXT("{\"error\":\"no active game world\"}")};
+		}
+		FString Result;
+		RunOnGameThread([&World, &NameFilter, bNear, NX, NY, NZ, Radius, Limit, &Result]()
+		{
+			// Centre: the given point, else the player's pawn. radius_m <= 0 = the whole world.
+			FVector Center(NX * 100.0, NY * 100.0, NZ * 100.0);
+			bool bHaveCenter = bNear;
+			if (!bHaveCenter)
+			{
+				APlayerController* PC = World->GetFirstPlayerController();
+				if (APawn* P = PC ? PC->GetPawn() : nullptr)
+				{
+					Center = P->GetActorLocation();
+					bHaveCenter = true;
+				}
+			}
+			struct FHit { double Dist; TSharedPtr<FJsonValue> Json; };
+			TArray<FHit> Hits;
+			int32 Matches = 0;
+			for (TActorIterator<APawn> It(World); It; ++It)
+			{
+				APawn* P = *It;
+				if (!P || !IsValid(P) || P->IsValidLowLevelFast(true) == false) continue;
+				const FString Cls = P->GetClass()->GetName();
+				if (!NameFilter.IsEmpty() && !Cls.Contains(NameFilter, ESearchCase::IgnoreCase))
+				{
+					continue;
+				}
+				const FVector Loc = P->GetActorLocation();
+				const double Dist = bHaveCenter ? FVector::Dist(Loc, Center) / 100.0 : -1.0;
+				if (bHaveCenter && Radius > 0.0 && Dist > Radius)
+				{
+					continue;
+				}
+				++Matches;
+				if (Hits.Num() >= 500) continue;
+				TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+				J->SetStringField(TEXT("class"), Cls);
+				J->SetStringField(TEXT("actor"), P->GetName());
+				J->SetBoolField(TEXT("isPlayer"), Cast<AFGCharacterPlayer>(P) != nullptr);
+				J->SetNumberField(TEXT("x"), Loc.X / 100.0);
+				J->SetNumberField(TEXT("y"), Loc.Y / 100.0);
+				J->SetNumberField(TEXT("z"), Loc.Z / 100.0);
+				J->SetNumberField(TEXT("yaw"), P->GetActorRotation().Yaw);
+				if (Dist >= 0.0)
+				{
+					J->SetNumberField(TEXT("distance_m"), Dist);
+				}
+				Hits.Add({Dist, MakeShared<FJsonValueObject>(J)});
+			}
+			Hits.Sort([](const FHit& A, const FHit& B) { return A.Dist < B.Dist; });
+			TArray<TSharedPtr<FJsonValue>> Items;
+			for (int32 i = 0; i < Hits.Num() && i < Limit; ++i)
+			{
+				Items.Add(Hits[i].Json);
+			}
+			TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+			Root->SetNumberField(TEXT("totalMatches"), Matches);
+			Root->SetBoolField(TEXT("centredOnPlayer"), bHaveCenter && !bNear);
+			Root->SetArrayField(TEXT("items"), Items);
+			Result = FinishJson(Root);
+		});
+		return Result.IsEmpty() ? FMcpToolResult{true, TEXT("{\"error\":\"game thread timeout\"}")} : FMcpToolResult{false, Result};
+	}
+
 	FMcpToolResult ToolPlayerInventory()
 	{
 		UWorld* World = GetGameWorld();
@@ -2639,6 +2724,7 @@ FString FMcpTools::GetToolsListJson()
 	{"name":"list_buildables","description":"List built machines/structures with class and location. Args: max (int, default 100).","inputSchema":{"type":"object","properties":{"max":{"type":"integer"}}}},
 	{"name":"get_buildables_summary","description":"Histogram of all built objects grouped by class name, sorted by count.","inputSchema":{"type":"object","properties":{}}},
 	{"name":"find_buildables","description":"Find buildables by class-name substring and/or radius around a point (meters). Args: name (string), near_x/near_y/near_z (numbers), radius_m (default 100), limit (default 50).","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"near_x":{"type":"number"},"near_y":{"type":"number"},"near_z":{"type":"number"},"radius_m":{"type":"number"},"limit":{"type":"integer"}}}},
+	{"name":"find_pawns","description":"Find pawns (players, creatures, vehicles, mod NPCs such as SatisfactoBot companions; find_buildables cannot see them) by class-name substring within radius_m of a point, sorted by distance. Args: name (string), near_x/near_y/near_z (meters; default = the player), radius_m (default 100; <= 0 = whole world), limit (default 50). Result items: class, actor, isPlayer, x, y, z (meters), yaw, distance_m.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"near_x":{"type":"number"},"near_y":{"type":"number"},"near_z":{"type":"number"},"radius_m":{"type":"number"},"limit":{"type":"integer"}}}},
 	{"name":"get_player_inventory","description":"Player inventory: item display names and counts, total slots.","inputSchema":{"type":"object","properties":{}}},
 	{"name":"list_storages","description":"Storage containers with contents (item names, counts). Args: limit (default 25), include_empty (bool), near_x/near_y/near_z + radius_m filter.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"},"include_empty":{"type":"boolean"},"near_x":{"type":"number"},"near_y":{"type":"number"},"near_z":{"type":"number"},"radius_m":{"type":"number"}}}},
 	{"name":"set_recipe","description":"Set production recipe on nearest manufacturer to point by product name (localized substring). Args: x,y,z (meters), product, radius_m (default 10).","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"product":{"type":"string"},"radius_m":{"type":"number"}},"required":["x","y","z","product"]}},
@@ -2703,6 +2789,10 @@ FMcpToolResult FMcpTools::Call(const FString& ToolName, const FString& ParamsJso
 	if (ToolName == TEXT("find_buildables"))
 	{
 		return ToolFindBuildables(Args);
+	}
+	if (ToolName == TEXT("find_pawns"))
+	{
+		return ToolFindPawns(Args);
 	}
 	if (ToolName == TEXT("get_player_inventory"))
 	{
