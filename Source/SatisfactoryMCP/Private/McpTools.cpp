@@ -1505,13 +1505,14 @@ namespace
 
 	// Interface C++ thunks (CanDismantle/Dismantle) crash due to header/game layout drift;
 	// dispatch the IFGDismantleInterface events via reflection instead (resolved by the game itself).
-	// Each struct mirrors the event's parameter list in FGDismantleInterface.h; the ParmsSize
-	// check refuses the call rather than corrupting the stack if the signature ever changes.
+	// Each struct mirrors the event's parameter list in FGDismantleInterface.h. ParmsSize can be
+	// the unpadded size (17 for TArray + bool, sizeof is 24), so only a larger value means the
+	// signature changed; the call is refused then rather than overrunning the struct.
 	bool CanDismantleByEvent(AActor* Actor)
 	{
 		UFunction* Fn = Actor->FindFunction(FName(TEXT("CanDismantle")));
 		struct { bool ReturnValue = false; } P;
-		if (!Fn || Fn->ParmsSize != sizeof(P)) return false;
+		if (!Fn || Fn->ParmsSize > sizeof(P)) return false;
 		Actor->ProcessEvent(Fn, &P);
 		return P.ReturnValue;
 	}
@@ -1520,7 +1521,7 @@ namespace
 	{
 		UFunction* Fn = Actor->FindFunction(FName(TEXT("GetDismantleRefund")));
 		struct { TArray<FInventoryStack> out_refund; bool noBuildCostEnabled = false; } P;
-		if (!Fn || Fn->ParmsSize != sizeof(P)) return false;
+		if (!Fn || Fn->ParmsSize > sizeof(P)) return false;
 		P.noBuildCostEnabled = bNoBuildCost;
 		Actor->ProcessEvent(Fn, &P);
 		OutRefund.Append(P.out_refund);
@@ -1534,7 +1535,7 @@ namespace
 		OutSet.Add(Actor);
 		UFunction* Fn = Actor->FindFunction(FName(TEXT("GetChildDismantleActors")));
 		struct { TArray<AActor*> out_ChildDismantleActors; } P;
-		if (!Fn || Fn->ParmsSize != sizeof(P)) return;
+		if (!Fn || Fn->ParmsSize > sizeof(P)) return;
 		Actor->ProcessEvent(Fn, &P);
 		for (AActor* Child : P.out_ChildDismantleActors)
 		{
@@ -1721,7 +1722,7 @@ namespace
 			// the typed side of chat: SML's ChatMessageEntered hook and any other mod's hook fire.
 			UFunction* EnterFn = PC->FindFunction(FName(TEXT("EnterChatMessage")));
 			struct { FString inMessage; } P;
-			if (EnterFn && EnterFn->ParmsSize == sizeof(P))
+			if (EnterFn && EnterFn->ParmsSize <= sizeof(P))
 			{
 				P.inMessage = Command;
 				PC->ProcessEvent(EnterFn, &P);
