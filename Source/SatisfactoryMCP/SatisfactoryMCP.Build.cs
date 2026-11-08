@@ -12,6 +12,6 @@ public class SatisfactoryMCP : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine" });
 
 		// SML transitively exports FactoryGame headers
-		PrivateDependencyModuleNames.AddRange(new string[] { "SML", "FactoryGame", "Json", "Sockets" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "SML", "FactoryGame", "Json", "Sockets", "Foliage", "GeometryCore" });
 	}
 }

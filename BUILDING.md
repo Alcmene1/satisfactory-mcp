@@ -186,3 +186,13 @@ Packaging and copying into the game (step 10), the same UAT command Alpakit Dev 
 ```
 
 After a code change: edit under `D:\Modding\SatisfactoryModLoader\Mods\SatisfactoryMCP` (a clone of this branch), commit and push there, then rerun only the packaging command and restore the token.
+
+### Building while the game is running (2026-11-08, clear_foliage / teleport_pawn)
+
+The game locks the mod DLL, so `-CopyToGameDirectory_Windows` cannot replace the game's `Mods\SatisfactoryMCP` while Satisfactory runs. Drop that flag: the same UAT command still compiles, cooks and writes `Saved\ArchivedPlugins\SatisfactoryMCP\SatisfactoryMCP-Windows.zip`. When the game is closed, unzip the archive over `G:\Steam\steamapps\common\Satisfactory\FactoryGame\Mods\SatisfactoryMCP` (the zip has no top-level folder: `.uplugin`, `Binaries\`, `Content\` land directly in the mod folder) and check `mcp_token.txt` is still there (backup: `D:\Backups\SatisfactoryMCP-mcp_token.txt`).
+
+```powershell
+& 'C:\Program Files\Unreal Engine - CSS\Engine\Build\BatchFiles\RunUAT.bat' -ScriptsForProject='D:\Modding\SatisfactoryModLoader\FactoryGame.uproject' PackagePlugin -project='D:\Modding\SatisfactoryModLoader\FactoryGame.uproject' -clientconfig=Shipping -serverconfig=Shipping -utf8output -DLCName=SatisfactoryMCP -build -platform=Win64 -nocompileeditor -installed
+```
+
+Module notes: `FGFoliageRemovalSubsystem.h` pulls in `IntVectorTypes.h` from `GeometryCore`, so `SatisfactoryMCP.Build.cs` lists `GeometryCore` (and `Foliage`) as private dependencies. The foliage subsystem's `GetFoliageWithinRadius` (TMap overload), `HasIdentifier`, `IsRemovable`, `GetFoliageType` and `RemoveFoliageInstances` are direct calls, exported by the game like the rest of `AFGFoliageRemovalSubsystem`.

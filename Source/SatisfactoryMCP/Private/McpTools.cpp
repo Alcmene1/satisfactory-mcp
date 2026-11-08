@@ -53,6 +53,12 @@
 #include "FGPowerConnectionComponent.h"
 #include "FGPowerInfoComponent.h"
 #include "UObject/UnrealType.h"
+#include "FGFoliageRemovalSubsystem.h"
+#include "FGFoliageIdentifier.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/PrimitiveComponent.h"
+#include "Engine/StaticMesh.h"
+#include "GameFramework/PawnMovementComponent.h"
 
 namespace
 {
@@ -2585,6 +2591,363 @@ namespace
 		});
 		return Result.IsEmpty() ? FMcpToolResult{true, TEXT("{\"error\":\"game thread timeout\"}")} : FMcpToolResult{false, Result};
 	}
+
+	// Downward trace at (X, Y) cm; FromZ cm is where the trace starts. Returns false when nothing is hit.
+	bool TraceGroundZ(UWorld* World, double Xcm, double Ycm, double FromZcm, double& OutZcm, const TArray<const AActor*>& Ignore = {})
+	{
+		FHitResult Hit;
+		const FVector Start(Xcm, Ycm, FromZcm);
+		const FVector End(Xcm, Ycm, -50000.0);
+		FCollisionQueryParams Q(SCENE_QUERY_STAT(McpPawnGroundZ), false);
+		Q.AddIgnoredActors(Ignore);
+		if (World->LineTraceSingleByChannel(Hit, Start, End, ECC_WorldStatic, Q))
+		{
+			OutZcm = Hit.ImpactPoint.Z;
+			return true;
+		}
+		return false;
+	}
+
+	// clear_foliage: bushes, grass, small rocks (and trees on request) within radius_m of a point, removed through the
+	// game's foliage removal subsystem with the host player as instigator so the removal is saved like a player's.
+	// Never touches buildables, resource nodes or creatures: only foliage HISM instances the subsystem knows about.
+	FMcpToolResult ToolClearFoliage(const TSharedPtr<FJsonObject>& Args)
+	{
+		double X = 0, Y = 0, Z = 0;
+		if (!Args->TryGetNumberField(TEXT("x"), X) || !Args->TryGetNumberField(TEXT("y"), Y))
+		{
+			return {true, TEXT("{\"error\":\"x,y (meters) required\"}")};
+		}
+		const bool bHaveZ = Args->TryGetNumberField(TEXT("z"), Z);
+		double Radius = 10.0;
+		Args->TryGetNumberField(TEXT("radius_m"), Radius);
+		const double RequestedRadius = Radius;
+		Radius = FMath::Clamp(Radius, 0.5, 60.0);
+		bool bDryRun = true;
+		Args->TryGetBoolField(TEXT("dry_run"), bDryRun);
+		bool bIncludeTrees = false;
+		Args->TryGetBoolField(TEXT("include_trees"), bIncludeTrees);
+		int32 MaxInstances = 1500;
+		Args->TryGetNumberField(TEXT("max_instances"), MaxInstances);
+		MaxInstances = FMath::Clamp(MaxInstances, 1, 5000);
+
+		UWorld* World = GetGameWorld();
+		if (!World)
+		{
+			return {true, TEXT("{\"error\":\"no active game world\"}")};
+		}
+		FString Result;
+		const bool bFinished = RunOnGameThread([&World, X, Y, Z, bHaveZ, Radius, RequestedRadius, bDryRun, bIncludeTrees, MaxInstances, &Result]()
+		{
+			AFGFoliageRemovalSubsystem* Sub = AFGFoliageRemovalSubsystem::Get(World);
+			if (!Sub)
+			{
+				Result = TEXT("{\"error\":\"no foliage removal subsystem\"}");
+				return;
+			}
+			APlayerController* PC = World->GetFirstPlayerController();
+			if (!PC)
+			{
+				Result = TEXT("{\"error\":\"no host player controller\"}");
+				return;
+			}
+			double Zcm = Z * 100.0;
+			bool bGroundFromTrace = false;
+			if (!bHaveZ)
+			{
+				if (!TraceGroundZ(World, X * 100.0, Y * 100.0, 50000.0, Zcm))
+				{
+					Result = TEXT("{\"error\":\"z omitted and no ground found under x,y\"}");
+					return;
+				}
+				bGroundFromTrace = true;
+			}
+			const FVector Center(X * 100.0, Y * 100.0, Zcm);
+			const float RadiusCm = static_cast<float>(Radius * 100.0);
+
+			TMap<UHierarchicalInstancedStaticMeshComponent*, TArray<int32>> Found;
+			Sub->GetFoliageWithinRadius(Center, RadiusCm, Found);
+
+			struct FInst { UHierarchicalInstancedStaticMeshComponent* Hism; int32 Id; double Dist; FString Mesh; FString Kind; };
+			TArray<FInst> Candidates;
+			int32 SkippedTrees = 0, SkippedNotRemovable = 0, SkippedOutOfRadius = 0;
+			for (auto& Pair : Found)
+			{
+				UHierarchicalInstancedStaticMeshComponent* Hism = Pair.Key;
+				if (!Hism || !IsValid(Hism)) continue;
+				const bool bBrush = AFGFoliageRemovalSubsystem::HasIdentifier(Hism, UFGFoliageIdentifier_RemovableByBuildings::StaticClass());
+				const bool bTree = AFGFoliageRemovalSubsystem::HasIdentifier(Hism, UFGFoliageIdentifier_Chainsawable::StaticClass());
+				UFoliageType* Type = Sub->GetFoliageType(Hism);
+				const bool bRemovable = Type && AFGFoliageRemovalSubsystem::IsRemovable(Type) && (bBrush || bTree);
+				if (!bRemovable)
+				{
+					SkippedNotRemovable += Pair.Value.Num();
+					continue;
+				}
+				if (bTree && !bBrush && !bIncludeTrees)
+				{
+					SkippedTrees += Pair.Value.Num();
+					continue;
+				}
+				const FString Mesh = Hism->GetStaticMesh() ? Hism->GetStaticMesh()->GetName() : Hism->GetName();
+				const FString Kind = (bTree && !bBrush) ? TEXT("tree") : TEXT("brush");
+				for (int32 Id : Pair.Value)
+				{
+					FTransform T;
+					if (!Hism->GetInstanceTransform(Id, T, true))
+					{
+						continue;
+					}
+					const double Dist = FVector::Dist(T.GetLocation(), Center);
+					if (Dist > RadiusCm)
+					{
+						++SkippedOutOfRadius;
+						continue;
+					}
+					Candidates.Add({Hism, Id, Dist / 100.0, Mesh, Kind});
+				}
+			}
+			Candidates.Sort([](const FInst& A, const FInst& B) { return A.Dist < B.Dist; });
+			const int32 TotalMatching = Candidates.Num();
+			const bool bTrimmed = Candidates.Num() > MaxInstances;
+			if (bTrimmed)
+			{
+				Candidates.SetNum(MaxInstances);
+			}
+
+			// Group per HISM (one RemoveFoliageInstances call each) and per mesh name for the report.
+			TMap<UHierarchicalInstancedStaticMeshComponent*, TArray<int32>> PerHism;
+			TMap<FString, int32> PerMesh;
+			TMap<FString, FString> MeshKind;
+			for (const FInst& C : Candidates)
+			{
+				PerHism.FindOrAdd(C.Hism).Add(C.Id);
+				PerMesh.FindOrAdd(C.Mesh) += 1;
+				MeshKind.FindOrAdd(C.Mesh) = C.Kind;
+			}
+
+			int32 Removed = 0, FailedComponents = 0;
+			if (!bDryRun)
+			{
+				for (auto& Pair : PerHism)
+				{
+					if (!Pair.Key || !IsValid(Pair.Key)) { ++FailedComponents; continue; }
+					if (Sub->RemoveFoliageInstances(PC, Pair.Key, Pair.Value, nullptr))
+					{
+						Removed += Pair.Value.Num();
+					}
+					else
+					{
+						++FailedComponents;
+					}
+				}
+			}
+
+			TArray<TSharedPtr<FJsonValue>> ByMesh;
+			PerMesh.ValueSort([](int32 A, int32 B) { return A > B; });
+			for (const auto& Pair : PerMesh)
+			{
+				TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+				J->SetStringField(TEXT("mesh"), Pair.Key);
+				J->SetStringField(TEXT("kind"), MeshKind[Pair.Key]);
+				J->SetNumberField(TEXT("count"), Pair.Value);
+				ByMesh.Add(MakeShared<FJsonValueObject>(J));
+			}
+
+			TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+			Root->SetBoolField(TEXT("dryRun"), bDryRun);
+			TSharedRef<FJsonObject> C = MakeShared<FJsonObject>();
+			C->SetNumberField(TEXT("x"), X);
+			C->SetNumberField(TEXT("y"), Y);
+			C->SetNumberField(TEXT("z"), Zcm / 100.0);
+			Root->SetObjectField(TEXT("center"), C);
+			Root->SetBoolField(TEXT("zFromGroundTrace"), bGroundFromTrace);
+			Root->SetNumberField(TEXT("radius_m"), Radius);
+			Root->SetBoolField(TEXT("includeTrees"), bIncludeTrees);
+			Root->SetNumberField(TEXT("matching"), TotalMatching);
+			Root->SetNumberField(bDryRun ? TEXT("wouldRemove") : TEXT("removed"), bDryRun ? Candidates.Num() : Removed);
+			Root->SetArrayField(TEXT("byMesh"), ByMesh);
+			TSharedRef<FJsonObject> Sk = MakeShared<FJsonObject>();
+			Sk->SetNumberField(TEXT("trees"), SkippedTrees);
+			Sk->SetNumberField(TEXT("notRemovable"), SkippedNotRemovable);
+			Sk->SetNumberField(TEXT("outOfRadius"), SkippedOutOfRadius);
+			Root->SetObjectField(TEXT("skipped"), Sk);
+			if (FailedComponents > 0)
+			{
+				Root->SetNumberField(TEXT("failedComponents"), FailedComponents);
+			}
+			TArray<FString> Notes;
+			if (RequestedRadius > 60.0)
+			{
+				Notes.Add(FString::Printf(TEXT("radius_m %.0f capped to 60"), RequestedRadius));
+			}
+			if (bTrimmed)
+			{
+				Notes.Add(FString::Printf(TEXT("%d instances matched; only the nearest %d %s (raise max_instances or call again)"),
+					TotalMatching, MaxInstances, bDryRun ? TEXT("listed") : TEXT("removed")));
+			}
+			if (SkippedTrees > 0 && !bIncludeTrees)
+			{
+				Notes.Add(FString::Printf(TEXT("%d tree instances left standing (include_trees:true to take them too)"), SkippedTrees));
+			}
+			if (bDryRun)
+			{
+				Notes.Add(TEXT("dry run: nothing removed; call again with dry_run:false"));
+			}
+			if (Notes.Num() > 0)
+			{
+				Root->SetStringField(TEXT("note"), FString::Join(Notes, TEXT("; ")));
+			}
+			Result = FinishJson(Root);
+		}, 60.f);
+		if (!bFinished || Result.IsEmpty())
+		{
+			return {true, TEXT("{\"error\":\"game thread timeout\"}")};
+		}
+		return {false, Result};
+	}
+
+	// teleport_pawn: move a non-player pawn (default: the SatisfactoBot companion, class BP_Compagnon_C) to x,y,z metres,
+	// or 3 m in front of the host player with to_player:true. Zeroes its velocity so it does not keep sliding into the wall it was stuck in.
+	FMcpToolResult ToolTeleportPawn(const TSharedPtr<FJsonObject>& Args)
+	{
+		FString NameFilter = TEXT("Compagnon");
+		Args->TryGetStringField(TEXT("name"), NameFilter);
+		if (NameFilter.IsEmpty()) NameFilter = TEXT("Compagnon");
+		double X = 0, Y = 0, Z = 0;
+		const bool bHaveX = Args->TryGetNumberField(TEXT("x"), X);
+		const bool bHaveY = Args->TryGetNumberField(TEXT("y"), Y);
+		const bool bHaveZ = Args->TryGetNumberField(TEXT("z"), Z);
+		bool bToPlayer = false;
+		Args->TryGetBoolField(TEXT("to_player"), bToPlayer);
+		bool bDryRun = false;
+		Args->TryGetBoolField(TEXT("dry_run"), bDryRun);
+		if (!bToPlayer && !(bHaveX && bHaveY))
+		{
+			return {true, TEXT("{\"error\":\"x,y (meters) required unless to_player:true\"}")};
+		}
+
+		UWorld* World = GetGameWorld();
+		if (!World)
+		{
+			return {true, TEXT("{\"error\":\"no active game world\"}")};
+		}
+		FString Result;
+		RunOnGameThread([&World, &NameFilter, X, Y, Z, bHaveZ, bToPlayer, bDryRun, &Result]()
+		{
+			APlayerController* PC = World->GetFirstPlayerController();
+			APawn* PlayerPawn = PC ? PC->GetPawn() : nullptr;
+			if (!PlayerPawn)
+			{
+				Result = TEXT("{\"error\":\"no player pawn\"}");
+				return;
+			}
+			const FVector PlayerLoc = PlayerPawn->GetActorLocation();
+
+			// Nearest non-player pawn whose class contains the filter (same matching as find_pawns).
+			APawn* Target = nullptr;
+			double BestDist = 0.0;
+			int32 Matches = 0;
+			for (TActorIterator<APawn> It(World); It; ++It)
+			{
+				APawn* P = *It;
+				if (!P || !IsValid(P) || P == PlayerPawn) continue;
+				if (Cast<AFGCharacterPlayer>(P)) continue;
+				if (!P->GetClass()->GetName().Contains(NameFilter, ESearchCase::IgnoreCase)) continue;
+				++Matches;
+				const double D = FVector::Dist(P->GetActorLocation(), PlayerLoc);
+				if (!Target || D < BestDist)
+				{
+					Target = P;
+					BestDist = D;
+				}
+			}
+			if (!Target)
+			{
+				Result = FString::Printf(TEXT("{\"error\":\"no non-player pawn with class containing '%s' (use find_pawns; players move with teleport_player)\"}"), *NameFilter);
+				return;
+			}
+
+			const FVector Old = Target->GetActorLocation();
+			FVector Dest;
+			bool bGroundTraced = false;
+			if (bToPlayer)
+			{
+				const FVector Fwd = FRotationMatrix(FRotator(0.f, PlayerPawn->GetActorRotation().Yaw, 0.f)).GetUnitAxis(EAxis::X);
+				Dest = PlayerLoc + Fwd * 300.0;
+				double GroundZ = 0.0;
+				if (TraceGroundZ(World, Dest.X, Dest.Y, PlayerLoc.Z + 200.0, GroundZ, {PlayerPawn, Target}))
+				{
+					Dest.Z = GroundZ + 100.0;
+					bGroundTraced = true;
+				}
+				else
+				{
+					Dest.Z = PlayerLoc.Z;
+				}
+			}
+			else
+			{
+				Dest = FVector(X * 100.0, Y * 100.0, Z * 100.0);
+				if (!bHaveZ)
+				{
+					double GroundZ = 0.0;
+					if (!TraceGroundZ(World, Dest.X, Dest.Y, 50000.0, GroundZ, {PlayerPawn, Target}))
+					{
+						Result = TEXT("{\"error\":\"z omitted and no ground found under x,y\"}");
+						return;
+					}
+					Dest.Z = GroundZ + 100.0;
+					bGroundTraced = true;
+				}
+			}
+
+			bool bMoved = false;
+			if (!bDryRun)
+			{
+				bMoved = Target->SetActorLocation(Dest, false, nullptr, ETeleportType::TeleportPhysics);
+				if (UPawnMovementComponent* MC = Target->GetMovementComponent())
+				{
+					MC->StopMovementImmediately();
+				}
+				if (UPrimitiveComponent* Root = Cast<UPrimitiveComponent>(Target->GetRootComponent()))
+				{
+					if (Root->IsSimulatingPhysics())
+					{
+						Root->SetPhysicsLinearVelocity(FVector::ZeroVector);
+						Root->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+					}
+				}
+			}
+			const FVector New = Target->GetActorLocation();
+
+			auto Vec = [](const FVector& V)
+			{
+				TSharedRef<FJsonObject> J = MakeShared<FJsonObject>();
+				J->SetNumberField(TEXT("x"), V.X / 100.0);
+				J->SetNumberField(TEXT("y"), V.Y / 100.0);
+				J->SetNumberField(TEXT("z"), V.Z / 100.0);
+				return J;
+			};
+			TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+			Root->SetBoolField(TEXT("dryRun"), bDryRun);
+			Root->SetStringField(TEXT("class"), Target->GetClass()->GetName());
+			Root->SetStringField(TEXT("actor"), Target->GetName());
+			Root->SetNumberField(TEXT("matches"), Matches);
+			Root->SetObjectField(TEXT("from"), Vec(Old));
+			Root->SetObjectField(TEXT("target"), Vec(Dest));
+			Root->SetObjectField(TEXT("now"), Vec(New));
+			Root->SetBoolField(TEXT("zFromGroundTrace"), bGroundTraced);
+			Root->SetBoolField(TEXT("toPlayer"), bToPlayer);
+			if (!bDryRun)
+			{
+				Root->SetBoolField(TEXT("moved"), bMoved);
+				Root->SetNumberField(TEXT("distanceToPlayer_m"), FVector::Dist(New, PlayerLoc) / 100.0);
+			}
+			Result = FinishJson(Root);
+		});
+		return Result.IsEmpty() ? FMcpToolResult{true, TEXT("{\"error\":\"game thread timeout\"}")} : FMcpToolResult{false, Result};
+	}
 }
 
 FMcpToolResult ToolSpawnBuildable(const TSharedPtr<FJsonObject>& Args)
@@ -2750,7 +3113,9 @@ FString FMcpTools::GetToolsListJson()
 	{"name":"get_machine_status","description":"Factories near point: class, location, current recipe products, connections (in/out, connected, item on output). Args: near_x,near_y,near_z,radius_m (default 50), class substring filter, limit (default 15).","inputSchema":{"type":"object","properties":{"near_x":{"type":"number"},"near_y":{"type":"number"},"near_z":{"type":"number"},"radius_m":{"type":"number"},"class":{"type":"string"},"limit":{"type":"integer"}},"required":["near_x","near_y","near_z"]}},
 	{"name":"power_check","description":"Power diagnostics near point: generators (canStart, capacity MW) and consumers actual vs target consumption MW (0 actual = unpowered or idle). Args: near_x,near_y,radius_m.","inputSchema":{"type":"object","properties":{"near_x":{"type":"number"},"near_y":{"type":"number"},"radius_m":{"type":"number"}},"required":["near_x","near_y"]}},
 	{"name":"dismantle","description":"Dismantle nearest buildable to x,y,z within radius_m (optional name substring filter), like the build gun: the refund goes to the player inventory, anything that does not fit goes to a dismantle crate, then the actor and its child dismantle actors are destroyed. Refuses what the game says cannot be dismantled. Args: x,y,z,radius_m,name,apply (default true; false = preview target only). force is accepted and ignored (destruction is now always complete). Result: dismantled,gone,children,refunded[{item,count,toInventory,toCrate}],crateStacks.","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"radius_m":{"type":"number"},"name":{"type":"string"},"apply":{"type":"boolean"},"force":{"type":"boolean"}},"required":["x","y","z"]}},
-	{"name":"run_chat_command","description":"Run a chat command as the host player, through the typed side of chat, so SML and mod commands fire (FRM sendChatMessage only prints text). Args: command (e.g. /follow, leading slash optional). recognised is true when SML has the command registered; when false, another mod's chat hook may still have handled it.","inputSchema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}
+	{"name":"run_chat_command","description":"Run a chat command as the host player, through the typed side of chat, so SML and mod commands fire (FRM sendChatMessage only prints text). Args: command (e.g. /follow, leading slash optional). recognised is true when SML has the command registered; when false, another mod's chat hook may still have handled it.","inputSchema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},
+	{"name":"clear_foliage","description":"Clear foliage like a player would: bushes, grass clumps, small rocks and other removable brush within radius_m of a point (meters; z optional = ground under x,y), removed through the game's foliage removal subsystem with the host player as instigator so it persists in the save. Never touches buildables, resource nodes or creatures. Args: x,y (required), z, radius_m (default 10, capped at 60), dry_run (default TRUE: list what would go, remove nothing), include_trees (default false: trees stay; true also fells chainsawable trees), max_instances (default 1500, nearest first). Result: matching, wouldRemove/removed, byMesh[{mesh,kind(brush|tree),count}], skipped{trees,notRemovable,outOfRadius}, note (caps, trimming).","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"radius_m":{"type":"number"},"dry_run":{"type":"boolean"},"include_trees":{"type":"boolean"},"max_instances":{"type":"integer"}},"required":["x","y"]}},
+	{"name":"teleport_pawn","description":"Teleport a non-player pawn (default name 'Compagnon' = the SatisfactoBot companion; class substring matching as find_pawns, nearest to the player wins) to x,y,z meters, or with to_player:true to 3 m in front of the host player at ground height. Use it when the companion is stuck in geometry. Without z the ground under x,y is traced and 1 m added. Velocity is zeroed. Args: name, x, y, z, to_player, dry_run (default false). Result: class, actor, from{x,y,z}, target, now, moved, distanceToPlayer_m.","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"to_player":{"type":"boolean"},"dry_run":{"type":"boolean"}}}}
 ])json";
 	return FString(ToolsJsonA) + FString(ToolsJsonA2) + FString(ToolsJsonB);
 }
@@ -2851,6 +3216,14 @@ FMcpToolResult FMcpTools::Call(const FString& ToolName, const FString& ParamsJso
 	if (ToolName == TEXT("teleport_player"))
 	{
 		return ToolTeleportPlayer(Args);
+	}
+	if (ToolName == TEXT("clear_foliage"))
+	{
+		return ToolClearFoliage(Args);
+	}
+	if (ToolName == TEXT("teleport_pawn"))
+	{
+		return ToolTeleportPawn(Args);
 	}
 	if (ToolName == TEXT("lightweight_convert"))
 	{
