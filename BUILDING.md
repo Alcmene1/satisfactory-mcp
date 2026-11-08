@@ -161,3 +161,28 @@ get release 1.0.1, and restore the token as above.
 
 Repeat from step 4 with the new SML commit, then steps 7 and 10. Back up the token first, and restore
 it if the folder was replaced.
+
+## What actually worked (2026-11-08, no editor needed)
+
+Steps 1 to 6 as above (the Wwise integration in the launcher took the defaults: version 2025.1.6.9117, Wwise Project left empty). Everything after that ran from PowerShell; the editor was never opened. The whole thing took about an hour, most of it downloads.
+
+Soundbanks (replaces the Wwise UI part of step 5):
+
+```powershell
+& 'C:\Audiokinetic\Wwise_2025.1.6.9117\Authoring\x64\Release\bin\WwiseConsole.exe' generate-soundbank 'D:\Modding\SatisfactoryModLoader\SatisfactoryModLoader_WwiseProject\SatisfactoryModLoader_WwiseProject.wproj'
+```
+
+Project files, then the editor build (step 7). The editor target is `FactoryEditor`, not `FactoryGameEditor`. The build took 4 minutes because the CSS engine ships prebuilt; the mod compiled cleanly first time.
+
+```powershell
+& 'C:\Program Files\Unreal Engine - CSS\Engine\Build\BatchFiles\Build.bat' -projectfiles -project='D:\Modding\SatisfactoryModLoader\FactoryGame.uproject' -game -rocket -progress
+& 'C:\Program Files\Unreal Engine - CSS\Engine\Build\BatchFiles\Build.bat' FactoryEditor Win64 Development -Project='D:\Modding\SatisfactoryModLoader\FactoryGame.uproject' -WaitMutex -FromMsBuild
+```
+
+Packaging and copying into the game (step 10), the same UAT command Alpakit Dev runs, Windows only. It also writes `Saved\ArchivedPlugins\SatisfactoryMCP\SatisfactoryMCP-Windows.zip`. It replaces the game's `Mods\SatisfactoryMCP` folder, so restore the token afterwards as in step 10.
+
+```powershell
+& 'C:\Program Files\Unreal Engine - CSS\Engine\Build\BatchFiles\RunUAT.bat' -ScriptsForProject='D:\Modding\SatisfactoryModLoader\FactoryGame.uproject' PackagePlugin -project='D:\Modding\SatisfactoryModLoader\FactoryGame.uproject' -clientconfig=Shipping -serverconfig=Shipping -utf8output -DLCName=SatisfactoryMCP -build -platform=Win64 -nocompileeditor -installed -CopyToGameDirectory_Windows='G:\Steam\steamapps\common\Satisfactory'
+```
+
+After a code change: edit under `D:\Modding\SatisfactoryModLoader\Mods\SatisfactoryMCP` (a clone of this branch), commit and push there, then rerun only the packaging command and restore the token.
