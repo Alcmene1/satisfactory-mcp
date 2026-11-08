@@ -15,6 +15,10 @@
 #include "GameFramework/PlayerController.h"
 
 #include "FGCharacterPlayer.h"
+#include "FGPlayerController.h"
+#include "FGDismantleInterface.h"
+#include "Command/ChatCommandLibrary.h"
+#include "Player/SMLRemoteCallObject.h"
 #include "FGHealthComponent.h"
 #include "Buildables/FGBuildable.h"
 #include "Buildables/FGBuildableStorage.h"
@@ -1479,6 +1483,70 @@ namespace
 		return Best;
 	}
 
+	// Escapes a string for the hand-built JSON results; control characters become spaces.
+	FString JsonEsc(const FString& S)
+	{
+		FString Out;
+		Out.Reserve(S.Len());
+		for (const TCHAR C : S)
+		{
+			if (C == TEXT('\\') || C == TEXT('"'))
+			{
+				Out.AppendChar(TEXT('\\'));
+				Out.AppendChar(C);
+			}
+			else
+			{
+				Out.AppendChar(C < 0x20 ? TEXT(' ') : C);
+			}
+		}
+		return Out;
+	}
+
+	// Interface C++ thunks (CanDismantle/Dismantle) crash due to header/game layout drift;
+	// dispatch the IFGDismantleInterface events via reflection instead (resolved by the game itself).
+	// Each struct mirrors the event's parameter list in FGDismantleInterface.h; the ParmsSize
+	// check refuses the call rather than corrupting the stack if the signature ever changes.
+	bool CanDismantleByEvent(AActor* Actor)
+	{
+		UFunction* Fn = Actor->FindFunction(FName(TEXT("CanDismantle")));
+		struct { bool ReturnValue = false; } P;
+		if (!Fn || Fn->ParmsSize != sizeof(P)) return false;
+		Actor->ProcessEvent(Fn, &P);
+		return P.ReturnValue;
+	}
+
+	bool GetDismantleRefundByEvent(AActor* Actor, bool bNoBuildCost, TArray<FInventoryStack>& OutRefund)
+	{
+		UFunction* Fn = Actor->FindFunction(FName(TEXT("GetDismantleRefund")));
+		struct { TArray<FInventoryStack> out_refund; bool noBuildCostEnabled = false; } P;
+		if (!Fn || Fn->ParmsSize != sizeof(P)) return false;
+		P.noBuildCostEnabled = bNoBuildCost;
+		Actor->ProcessEvent(Fn, &P);
+		OutRefund.Append(P.out_refund);
+		return true;
+	}
+
+	// Actor first, then everything it says should be dismantled along with it.
+	void CollectDismantleSet(AActor* Actor, TArray<AActor*>& OutSet, int32 Depth = 0)
+	{
+		if (!Actor || !IsValid(Actor) || OutSet.Contains(Actor) || Depth > 16) return;
+		OutSet.Add(Actor);
+		UFunction* Fn = Actor->FindFunction(FName(TEXT("GetChildDismantleActors")));
+		struct { TArray<AActor*> out_ChildDismantleActors; } P;
+		if (!Fn || Fn->ParmsSize != sizeof(P)) return;
+		Actor->ProcessEvent(Fn, &P);
+		for (AActor* Child : P.out_ChildDismantleActors)
+		{
+			if (Child && IsValid(Child)
+				&& Child->GetClass()->ImplementsInterface(UFGDismantleInterface::StaticClass())
+				&& CanDismantleByEvent(Child))
+			{
+				CollectDismantleSet(Child, OutSet, Depth + 1);
+			}
+		}
+	}
+
 	FMcpToolResult ToolDismantle(const TSharedPtr<FJsonObject>& Args)
 	{
 		double X = 0, Y = 0, Z = 0;
@@ -1492,8 +1560,6 @@ namespace
 		Args->TryGetStringField(TEXT("name"), NameFilter);
 		bool bApply = true;
 		Args->TryGetBoolField(TEXT("apply"), bApply);
-		bool bForce = false;
-		Args->TryGetBoolField(TEXT("force"), bForce);
 
 		UWorld* World = GetGameWorld();
 		if (!World)
@@ -1501,7 +1567,7 @@ namespace
 			return {true, TEXT("{\"error\":\"no active game world\"}")};
 		}
 		FString Result;
-		RunOnGameThread([&World, X, Y, Z, Radius, &NameFilter, bApply, bForce, &Result]()
+		RunOnGameThread([&World, X, Y, Z, Radius, &NameFilter, bApply, &Result]()
 		{
 			const FVector Center(X * 100.0, Y * 100.0, Z * 100.0);
 			const FString F = LowerUnicode(NameFilter);
@@ -1527,29 +1593,153 @@ namespace
 				return;
 			}
 			const FString Cls = Target->GetClass()->GetName();
-			if (!bApply)
+			if (!CanDismantleByEvent(Target))
 			{
-				Result = FString::Printf(TEXT("{\"target\":\"%s\",\"distance_m\":%.1f,\"apply\":false}"), *Cls, FMath::Sqrt(BestDist) / 100.0);
+				Result = FString::Printf(TEXT("{\"error\":\"the game does not allow dismantling this\",\"class\":\"%s\"}"), *Cls);
 				return;
 			}
-			// Interface C++ thunks (CanDismantle/Dismantle) crash due to header/game layout drift;
-			// dispatch the BlueprintCallable events via reflection instead (resolved by the game itself).
-			UFunction* DismantleFn = Target->FindFunctionChecked(FName(TEXT("Dismantle")));
+			TArray<AActor*> DismantleSet;
+			CollectDismantleSet(Target, DismantleSet);
+			if (!bApply)
+			{
+				Result = FString::Printf(TEXT("{\"target\":\"%s\",\"distance_m\":%.1f,\"children\":%d,\"apply\":false}"), *Cls, FMath::Sqrt(BestDist) / 100.0, DismantleSet.Num() - 1);
+				return;
+			}
+			UFunction* DismantleFn = Target->FindFunction(FName(TEXT("Dismantle")));
 			if (!DismantleFn)
 			{
 				Result = FString::Printf(TEXT("{\"error\":\"dismantle function not found\",\"class\":\"%s\"}"), *Cls);
 				return;
 			}
-			// Post-kill verification; optional force=true hard-destroys if the game's
-			// Dismantle event leaves the actor alive (skips refunds).
-			Target->ProcessEvent(DismantleFn, nullptr);
-			bool bDead = !IsValid(Target) || Target->IsValidLowLevelFast(true) == false;
-			if (!bDead && bForce)
+
+			// The pawn is the vehicle while driving; GetControlledCharacter finds the player inside it.
+			APlayerController* PC = World->GetFirstPlayerController();
+			AFGCharacterPlayer* Char = PC ? Cast<AFGCharacterPlayer>(PC->GetPawn()) : nullptr;
+			if (!Char)
 			{
-				Target->K2_DestroyActor();
-				bDead = !IsValid(Target) || Target->IsValidLowLevelFast(true) == false;
+				const AFGPlayerController* FGPC = Cast<AFGPlayerController>(PC);
+				Char = FGPC ? Cast<AFGCharacterPlayer>(FGPC->GetControlledCharacter()) : nullptr;
 			}
-			Result = FString::Printf(TEXT("{\"dismantled\":\"%s\",\"gone\":%s}"), *Cls, bDead ? TEXT("true") : TEXT("false"));
+			UFGInventoryComponent* Inv = Char ? Char->GetInventory() : nullptr;
+			if (!Inv)
+			{
+				Result = TEXT("{\"error\":\"no player inventory to refund to; nothing dismantled\"}");
+				return;
+			}
+
+			// Read every refund before anything changes, so a failure here costs nothing.
+			const bool bNoBuildCost = Inv->GetNoBuildCost();
+			TArray<FInventoryStack> Refund;
+			for (AActor* A : DismantleSet)
+			{
+				if (!GetDismantleRefundByEvent(A, bNoBuildCost, Refund))
+				{
+					Result = FString::Printf(TEXT("{\"error\":\"GetDismantleRefund failed; nothing dismantled\",\"class\":\"%s\"}"), *A->GetClass()->GetName());
+					return;
+				}
+			}
+
+			FString RefundJson;
+			TArray<FInventoryStack> Overflow;
+			for (const FInventoryStack& Stack : Refund)
+			{
+				if (!Stack.HasItems()) continue;
+				const int32 Added = Inv->AddStack(Stack, true);
+				if (Added < Stack.NumItems)
+				{
+					FInventoryStack Left = Stack;
+					Left.NumItems = Stack.NumItems - Added;
+					Overflow.Add(Left);
+				}
+				if (!RefundJson.IsEmpty()) RefundJson += TEXT(",");
+				RefundJson += FString::Printf(TEXT("{\"item\":\"%s\",\"count\":%d,\"toInventory\":%d,\"toCrate\":%d}"),
+					*JsonEsc(UFGItemDescriptor::GetItemName(Stack.Item.GetItemClass()).ToString()), Stack.NumItems, Added, Stack.NumItems - Added);
+			}
+			// The crate is placed from the actor, so this has to happen while it still exists.
+			if (Overflow.Num() > 0)
+			{
+				FDismantleHelpers::DropRefundOnGround(Target, Target->GetActorLocation(), Overflow, Char);
+			}
+
+			// Children first. Dismantle alone leaves the actor half-dismantled on this game
+			// version (belt disconnected, pole without wires), so always follow with Destroy.
+			for (int32 i = DismantleSet.Num() - 1; i >= 0; --i)
+			{
+				AActor* A = DismantleSet[i];
+				if (!IsValid(A)) continue;
+				if (UFunction* Fn = A->FindFunction(FName(TEXT("Dismantle"))))
+				{
+					A->ProcessEvent(Fn, nullptr);
+				}
+				if (IsValid(A)) A->K2_DestroyActor();
+			}
+			const bool bDead = !IsValid(Target) || Target->IsValidLowLevelFast(true) == false;
+			Result = FString::Printf(TEXT("{\"dismantled\":\"%s\",\"gone\":%s,\"children\":%d,\"refunded\":[%s],\"crateStacks\":%d}"),
+				*Cls, bDead ? TEXT("true") : TEXT("false"), DismantleSet.Num() - 1, *RefundJson, Overflow.Num());
+		});
+		return Result.IsEmpty() ? FMcpToolResult{true, TEXT("{\"error\":\"game thread timeout\"}")} : FMcpToolResult{false, Result};
+	}
+
+	FMcpToolResult ToolRunChatCommand(const TSharedPtr<FJsonObject>& Args)
+	{
+		FString Command;
+		Args->TryGetStringField(TEXT("command"), Command);
+		Command.TrimStartAndEndInline();
+		if (!Command.StartsWith(TEXT("/")))
+		{
+			Command.InsertAt(0, TEXT('/'));
+		}
+		const FString CommandLine = Command.RightChop(1).TrimStartAndEnd();
+		if (CommandLine.IsEmpty())
+		{
+			return {true, TEXT("{\"error\":\"command required, e.g. /follow\"}")};
+		}
+
+		UWorld* World = GetGameWorld();
+		if (!World)
+		{
+			return {true, TEXT("{\"error\":\"no active game world\"}")};
+		}
+		FString Result;
+		RunOnGameThread([&World, &Command, &CommandLine, &Result]()
+		{
+			AFGPlayerController* PC = Cast<AFGPlayerController>(World->GetFirstPlayerController());
+			if (!PC)
+			{
+				Result = TEXT("{\"error\":\"no player controller\"}");
+				return;
+			}
+
+			// Same lookup RunChatCommand does: first space-separated token, case-sensitive.
+			int32 Space = INDEX_NONE;
+			const FString Name = CommandLine.FindChar(TEXT(' '), Space) ? CommandLine.Left(Space) : CommandLine;
+			AChatCommandSubsystem* Commands = AChatCommandSubsystem::Get(World);
+			const bool bRecognised = Commands && Commands->FindCommandByName(Name) != nullptr;
+			const FString Echo = JsonEsc(Command);
+
+			// EnterChatMessage is a protected UFUNCTION, reachable only through reflection. It is
+			// the typed side of chat: SML's ChatMessageEntered hook and any other mod's hook fire.
+			UFunction* EnterFn = PC->FindFunction(FName(TEXT("EnterChatMessage")));
+			struct { FString inMessage; } P;
+			if (EnterFn && EnterFn->ParmsSize == sizeof(P))
+			{
+				P.inMessage = Command;
+				PC->ProcessEvent(EnterFn, &P);
+				Result = FString::Printf(TEXT("{\"command\":\"%s\",\"sent\":true,\"via\":\"EnterChatMessage\",\"recognised\":%s%s}"),
+					*Echo, bRecognised ? TEXT("true") : TEXT("false"),
+					bRecognised ? TEXT("") : TEXT(",\"note\":\"not a registered SML command; SML printed Unknown command unless another mod's chat hook handles it\""));
+				return;
+			}
+
+			USMLRemoteCallObject* RCO = PC->GetRemoteCallObjectOfClass<USMLRemoteCallObject>();
+			if (!Commands || !RCO)
+			{
+				Result = FString::Printf(TEXT("{\"error\":\"no way to run the command\",\"command\":\"%s\"}"), *Echo);
+				return;
+			}
+			const EExecutionStatus Status = Commands->RunChatCommand(CommandLine, RCO->CommandSender.Get());
+			Result = FString::Printf(TEXT("{\"command\":\"%s\",\"sent\":true,\"via\":\"RunChatCommand\",\"recognised\":%s,\"status\":\"%s\"}"),
+				*Echo, bRecognised ? TEXT("true") : TEXT("false"), *StaticEnum<EExecutionStatus>()->GetNameStringByValue(static_cast<int64>(Status)));
 		});
 		return Result.IsEmpty() ? FMcpToolResult{true, TEXT("{\"error\":\"game thread timeout\"}")} : FMcpToolResult{false, Result};
 	}
@@ -2472,7 +2662,8 @@ FString FMcpTools::GetToolsListJson()
 	{"name":"wire","description":"Run a power line like a player: wire hologram snaps between the power connector near x1,y1,z1 and the one near x2,y2,z2 (machine<->pole or pole<->pole), then verifies both ends share one power circuit. Args: x1,y1,z1,x2,y2,z2 (meters), r1,r2 search radius m.","inputSchema":{"type":"object","properties":{"x1":{"type":"number"},"y1":{"type":"number"},"z1":{"type":"number"},"x2":{"type":"number"},"y2":{"type":"number"},"z2":{"type":"number"},"r1":{"type":"number"},"r2":{"type":"number"}},"required":["x1","y1","z1","x2","y2","z2"]}},
 	{"name":"get_machine_status","description":"Factories near point: class, location, current recipe products, connections (in/out, connected, item on output). Args: near_x,near_y,near_z,radius_m (default 50), class substring filter, limit (default 15).","inputSchema":{"type":"object","properties":{"near_x":{"type":"number"},"near_y":{"type":"number"},"near_z":{"type":"number"},"radius_m":{"type":"number"},"class":{"type":"string"},"limit":{"type":"integer"}},"required":["near_x","near_y","near_z"]}},
 	{"name":"power_check","description":"Power diagnostics near point: generators (canStart, capacity MW) and consumers actual vs target consumption MW (0 actual = unpowered or idle). Args: near_x,near_y,radius_m.","inputSchema":{"type":"object","properties":{"near_x":{"type":"number"},"near_y":{"type":"number"},"radius_m":{"type":"number"}},"required":["near_x","near_y"]}},
-	{"name":"dismantle","description":"Dismantle nearest buildable to x,y,z within radius_m (optional name substring filter). Args: x,y,z,radius_m,name,apply (default true; false = preview target only),force (hard-destroy if the game event leaves the actor alive).","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"radius_m":{"type":"number"},"name":{"type":"string"},"apply":{"type":"boolean"},"force":{"type":"boolean"}},"required":["x","y","z"]}}
+	{"name":"dismantle","description":"Dismantle nearest buildable to x,y,z within radius_m (optional name substring filter), like the build gun: the refund goes to the player inventory, anything that does not fit goes to a dismantle crate, then the actor and its child dismantle actors are destroyed. Refuses what the game says cannot be dismantled. Args: x,y,z,radius_m,name,apply (default true; false = preview target only). force is accepted and ignored (destruction is now always complete). Result: dismantled,gone,children,refunded[{item,count,toInventory,toCrate}],crateStacks.","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"},"radius_m":{"type":"number"},"name":{"type":"string"},"apply":{"type":"boolean"},"force":{"type":"boolean"}},"required":["x","y","z"]}},
+	{"name":"run_chat_command","description":"Run a chat command as the host player, through the typed side of chat, so SML and mod commands fire (FRM sendChatMessage only prints text). Args: command (e.g. /follow, leading slash optional). recognised is true when SML has the command registered; when false, another mod's chat hook may still have handled it.","inputSchema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}
 ])json";
 	return FString(ToolsJsonA) + FString(ToolsJsonA2) + FString(ToolsJsonB);
 }
@@ -2561,6 +2752,10 @@ FMcpToolResult FMcpTools::Call(const FString& ToolName, const FString& ParamsJso
 	if (ToolName == TEXT("dismantle"))
 	{
 		return ToolDismantle(Args);
+	}
+	if (ToolName == TEXT("run_chat_command"))
+	{
+		return ToolRunChatCommand(Args);
 	}
 	if (ToolName == TEXT("teleport_player"))
 	{

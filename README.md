@@ -4,14 +4,14 @@ An in-game MCP server for Satisfactory (SML mod): control building and productio
 
 > Single-player Creative/sandbox only. This is an automation tool, not a multiplayer cheat: the server binds to `127.0.0.1` exclusively.
 
-## Capabilities (26 tools)
+## Capabilities (27 tools)
 
 | Group | Tools |
 |---|---|
 | Recon | `get_game_info`, `get_player_state`, `get_buildables_summary`, `find_buildables`, `get_machine_status` (+ connector and power-socket coordinates), `get_ground_z`, `power_check` (+ sockets), `get_resource_nodes`, `list_recipes`, `list_storages` |
 | Building | `build` (`grid` — world-grid snapping, `flat_z` — level floors, `dry_run` — validate without building), `build_many` (batch in one call), `build_belt` (native `straight`/`curve` build modes, `via` waypoints, `dry_run`), `wire`, `spawn_buildable`, `move_buildable` |
 | Lightweight buildables | `lightweight_list`, `lightweight_remove`, `lightweight_convert` — foundations and walls are stored as lightweight instances that plain actor APIs do not see |
-| Gameplay | `dismantle`, `set_recipe`, `give_item`, `teleport_player`, `set_phase` |
+| Gameplay | `dismantle` (with refund), `run_chat_command`, `set_recipe`, `give_item`, `teleport_player`, `set_phase` |
 
 ## Security
 
@@ -43,6 +43,8 @@ curl -s -X POST http://127.0.0.1:8898/mcp \
 ```
 
 ## Building
+
+Fork-specific setup, step by step: [BUILDING.md](BUILDING.md).
 
 Requires the [Satisfactory Modding Starter Project](https://docs.ficsit.app/) (v3.12+) and Unreal Engine 5 with the CSS profile.
 
